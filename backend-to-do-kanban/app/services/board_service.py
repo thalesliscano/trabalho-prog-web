@@ -1,5 +1,5 @@
 # board_service.py
-from ..models import conectar_bd
+from ..db import conectar_bd
 from ..services.tarefa_service import TaskService
 
 class BoardService:

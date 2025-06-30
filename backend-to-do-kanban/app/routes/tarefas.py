@@ -1,41 +1,44 @@
-from flask import Blueprint, request, jsonify
+# app/routes/tarefas.py
+
+from flask import Blueprint, request, jsonify, current_app
 from flasgger import swag_from
 from app.services.tarefa_service import TaskService
-import jwt
-from ..models import conectar_bd
+import jwt # Importe jwt para as funções de token se ainda estiverem sendo usadas (idealmente no decorador)
 
+from app.utils.decorators import token_required
 
 
 tarefas_bp = Blueprint('tasks', __name__)
 
-# Chave secreta usada para assinar o token
-SECRET_KEY = 'sua_chave_secreta_aqui'
-
-# Função para obter o user_id do token JWT
+# Mantenha estas funções se ainda precisar delas em algum lugar fora do decorador.
+# Caso contrário, pode removê-las.
 def obter_user_id_do_token(token):
     try:
-        decoded_token = jwt.decode(token, SECRET_KEY, algorithms=["HS256"], options={"verify_exp": True})  # Verifica a expiração
+        decoded_token = jwt.decode(token, current_app.config['SECRET_KEY'], algorithms=["HS256"], options={"verify_exp": True})
         return decoded_token.get("user_id")
     except jwt.ExpiredSignatureError:
         print("Erro: Token expirado!")
-        return None  # Token expirado
+        return None
     except jwt.InvalidTokenError:
         print("Erro: Token inválido!")
-        return None  # Token inválido
+        return None
 
+def extrair_token_do_header():
+    auth_header = request.headers.get('Authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        return auth_header.split(' ')[1]
+    return None
+
+
+# ----------------- ROTAS TAREFAS -----------------
 
 @tarefas_bp.route('/tasks', methods=['POST'])
+@token_required
 @swag_from({
     'tags': ['Tarefas'],
     'description': 'Cria uma nova tarefa associada a um board de um usuário autenticado',
+    'security': [{'Bearer': []}],
     'parameters': [
-        {
-            'name': 'Authorization',
-            'in': 'header',
-            'type': 'string',
-            'description': 'Token JWT para autenticação',
-            'required': True
-        },
         {
             'name': 'tarefa',
             'in': 'body',
@@ -44,11 +47,14 @@ def obter_user_id_do_token(token):
             'properties': {
                 'title': {'type': 'string', 'description': 'Título da tarefa'},
                 'description': {'type': 'string', 'description': 'Descrição da tarefa'},
-                'status': {'type': 'string', 'enum': ['toDo', 'doing', 'done'], 'default': 'toDo', 'description': 'Status da tarefa'}
+                'status': {'type': 'string', 'enum': ['toDo', 'doing', 'done', 'archived'], 'default': 'toDo', 'description': 'Status da tarefa'},
+                'labels': {'type': 'array', 'items': {'type': 'integer'}, 'description': 'Lista de IDs de labels a serem associadas à tarefa (opcional)'} # NOVO CAMPO
             },
             'example': {
                 'title': 'Nova Tarefa',
-                'description': 'Descrição da tarefa'
+                'description': 'Descrição da tarefa',
+                'status': 'toDo',
+                'labels': [1, 2] # Exemplo de IDs de labels
             }
         }
     ],
@@ -57,147 +63,146 @@ def obter_user_id_do_token(token):
             'description': 'Tarefa criada com sucesso',
             'examples': {
                 'application/json': {
-                    'id': 1,
+                    'id': 1, # Adicionado ID da tarefa
+                    'user_task_id': 1,
                     'title': 'Nova Tarefa',
                     'description': 'Descrição da tarefa',
                     'user_id': 1,
                     'board_id': 1,
-                    'status': 'doing'
+                    'status': 'toDo',
+                    'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}] # Exemplo de labels associadas
                 }
             }
         },
         '400': {
-            'description': 'Campos obrigatórios ausentes',
+            'description': 'Campos obrigatórios ausentes ou erro na requisição',
             'examples': {
-                'application/json': {'erro': 'Campos obrigatórios ausentes!'}
-            }
-        }
-    }
-})
-def criar_tarefa():
-    try:
-        # Pegando os dados da requisição
-        data = request.get_json()
-        print("Dados recebidos:", data)
-
-        title = data.get('title')
-        description = data.get('description')
-        status = data.get('status', 'toDo')  # Se o status não for enviado, será 'doing' por padrão
-
-        if not title:
-            print("Erro: Título não fornecido!")
-            return jsonify({"erro": "Título é obrigatório!"}), 400
-
-        # Pegando o token JWT do cabeçalho Authorization
-        token = request.headers.get('Authorization')
-        print("Token recebido:", token)
-        if token:
-            token = token.split(" ")[1]  # Pega o token depois do "Bearer"
-        else:
-            print("Erro: Token não fornecido!")
-            return jsonify({"erro": "Token JWT não fornecido!"}), 400
-
-        # Obtendo o user_id a partir do token JWT
-        user_id = obter_user_id_do_token(token)
-        print("User ID decodificado:", user_id)
-        if not user_id:
-            print("Erro: Token inválido ou expirado!")
-            return jsonify({"erro": "Token inválido ou expirado!"}), 400
-
-        # Buscar o board associado ao usuário
-        board_id = TaskService.obter_board_do_usuario(user_id)
-        print("Board ID associado:", board_id)
-        if not board_id:
-            print("Erro: Nenhum board encontrado para o usuário!")
-            return jsonify({"erro": "Board não encontrado para o usuário!"}), 400
-
-        # Criando a tarefa
-        tarefa = TaskService.criar_tarefa(title, description, user_id, board_id, status)
-        print("Tarefa criada:", tarefa)
-
-        return jsonify(tarefa), 201
-
-    except Exception as e:
-        print("Erro inesperado:", str(e))
-        return jsonify({"erro": "Erro interno do servidor!"}), 500
-
-@tarefas_bp.route('/tasks', methods=['GET'])
-@swag_from({
-    'tags': ['Tarefas'],
-    'description': 'Busca as tarefas associadas a um usuário',
-    'parameters': [
-        {
-            'name': 'user_id',
-            'in': 'query',
-            'type': 'integer',
-            'description': 'ID do usuário para filtrar as tarefas',
-            'required': True
-        }
-    ],
-    'responses': {
-        '200': {
-            'description': 'Lista de tarefas encontradas',
-            'examples': {
-                'application/json': [
-                    {'title': 'Tarefa 1', 'description': 'Descrição da tarefa 1', 'user_id': 1, 'board_id': 1},
-                    {'title': 'Tarefa 2', 'description': 'Descrição da tarefa 2', 'user_id': 1, 'board_id': 2}
-                ]
+                'application/json': {'erro': 'Título é obrigatório!'},
+                'application/json': {'erro': 'Alguma(s) label(s) fornecida(s) não pertence(m) a você ou não existe(m)!'}
             }
         },
-        '400': {
-            'description': 'user_id é necessário',
+        '401': {
+            'description': 'Token inválido ou expirado',
             'examples': {
-                'application/json': {'erro': 'user_id é necessário!'}
+                'application/json': {'erro': 'Token inválido ou expirado!'}
             }
         },
         '404': {
-            'description': 'Nenhuma tarefa encontrada',
+            'description': 'Board não encontrado para o usuário',
             'examples': {
-                'application/json': {'erro': 'Nenhuma tarefa encontrada!'}
+                'application/json': {'erro': 'Board não encontrado para o usuário!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao criar tarefa!'}
             }
         }
     }
 })
-def buscar_tarefas():
-    # Pegando o user_id da requisição
-    user_id = request.args.get('user_id')  # Você pode pegar isso do token JWT ou como parâmetro
-    
-    if not user_id:
-        return jsonify({"erro": "user_id é necessário!"}), 400
-    
-    tarefas = TaskService.buscar_tarefas_por_usuario(user_id)
-    
-    if tarefas:
-        return jsonify(tarefas), 200
-    else:
-        return jsonify({"erro": "Nenhuma tarefa encontrada!"}), 404
+def criar_tarefa(user_id):
+    try:
+        data = request.get_json()
 
-@tarefas_bp.route('/tasks/<int:user_task_id>', methods=['PATCH'])
+        title = data.get('title')
+        description = data.get('description')
+        status = data.get('status', 'toDo')
+        label_ids = data.get('labels', []) # Novo: lista de IDs de labels
+
+        if not title:
+            return jsonify({"erro": "Título é obrigatório!"}), 400
+
+        board_id = TaskService.obter_board_do_usuario(user_id)
+        if not board_id:
+            return jsonify({"erro": "Board não encontrado para o usuário!"}), 404
+
+        tarefa = TaskService.criar_tarefa(title, description, user_id, board_id, status)
+        
+        if tarefa:
+            # Associar labels se forem fornecidas
+            if label_ids:
+                for label_id in label_ids:
+                    response, status_code = TaskService.vincular_label_a_tarefa(tarefa['id'], label_id, user_id)
+                    if status_code != 200: # Se houver erro ao vincular uma label
+                        # Rollback da criação da tarefa se uma label não puder ser vinculada
+                        TaskService.excluir_tarefa(tarefa['id'], user_id)
+                        return jsonify({"erro": f"Erro ao vincular label {label_id}: {response['erro']}"}), status_code
+                # Após vincular todas as labels, buscar a tarefa novamente para retornar com as labels
+                tarefa_completa = TaskService.buscar_tarefa_por_id(tarefa['id'], user_id)
+                return jsonify(tarefa_completa), 201
+            return jsonify(tarefa), 201
+        else:
+            return jsonify({"erro": "Não foi possível criar a tarefa devido a um problema interno."}), 500
+
+    except Exception as e:
+        print(f"Erro inesperado ao criar tarefa: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao criar tarefa!"}), 500
+
+@tarefas_bp.route('/tasks', methods=['GET'])
+@token_required
 @swag_from({
     'tags': ['Tarefas'],
-    'description': 'Atualiza o status de uma tarefa existente',
+    'description': 'Busca as tarefas associadas ao usuário autenticado',
+    'security': [{'Bearer': []}],
+    'responses': {
+        '200': {
+            'description': 'Lista de tarefas encontradas para o usuário logado (pode ser vazia)',
+            'examples': {
+                'application/json': [
+                    {'id': 1, 'user_task_id': 1, 'title': 'Tarefa 1', 'description': 'Descrição 1', 'status': 'toDo', 'created_at': '2025-06-19 10:00:00', 'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}]},
+                    {'id': 2, 'user_task_id': 2, 'title': 'Tarefa 2', 'description': 'Descrição 2', 'status': 'doing', 'created_at': '2025-06-19 10:05:00', 'labels': []}
+                ]
+            }
+        },
+        '401': {
+            'description': 'Token ausente ou inválido',
+            'examples': {
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao buscar tarefas!'}
+            }
+        }
+    }
+})
+def buscar_tarefas(user_id):
+    try:
+        tarefas = TaskService.buscar_tarefas_por_usuario(user_id)
+        return jsonify(tarefas), 200
+    except Exception as e:
+        print(f"Erro inesperado ao buscar tarefas: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao buscar tarefas!"}), 500
+
+
+@tarefas_bp.route('/tasks/status/<int:task_id>', methods=['PATCH'])
+@token_required
+@swag_from({
+    'tags': ['Tarefas'],
+    'description': 'Atualiza o status de uma tarefa existente do usuário autenticado',
+    'security': [{'Bearer': []}],
     'parameters': [
         {
-            'name': 'Authorization',
-            'in': 'header',
-            'type': 'string',
-            'description': 'Token JWT para autenticação',
-            'required': True
-        },
-        {
-            'name': 'user_task_id',
+            'name': 'task_id',
             'in': 'path',
             'type': 'integer',
-            'description': 'ID da tarefa a ser atualizada',
+            'description': 'ID principal da tarefa a ser atualizada',
             'required': True
         },
         {
             'name': 'status',
             'in': 'body',
-            'type': 'string',
-            'enum': ['toDo', 'doing', 'done'],
-            'description': 'Novo status da tarefa',
-            'required': True
+            'type': 'object',
+            'required': True,
+            'properties': {
+                'status': {'type': 'string', 'enum': ['toDo', 'doing', 'done', 'archived'], 'description': 'Novo status da tarefa'}
+            },
+            'example': {
+                'status': 'done'
+            }
         }
     ],
     'responses': {
@@ -205,12 +210,13 @@ def buscar_tarefas():
             'description': 'Status da tarefa atualizado com sucesso',
             'examples': {
                 'application/json': {
-                    'user_task_id': 1,
+                    'id': 1,
                     'title': 'Nova Tarefa',
                     'description': 'Descrição da tarefa',
                     'status': 'done',
                     'user_id': 1,
-                    'board_id': 1
+                    'board_id': 1,
+                    'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}] # Exemplo de labels associadas
                 }
             }
         },
@@ -220,82 +226,56 @@ def buscar_tarefas():
                 'application/json': {'erro': 'Status é obrigatório!'}
             }
         },
-        '404': {
-            'description': 'Tarefa não encontrada',
+        '401': {
+            'description': 'Token ausente ou inválido',
             'examples': {
-                'application/json': {'erro': 'Tarefa não encontrada!'}
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
+            }
+        },
+        '404': {
+            'description': 'Tarefa não encontrada ou não pertence ao usuário',
+            'examples': {
+                'application/json': {'erro': 'Tarefa não encontrada ou não pertence ao usuário!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao editar tarefa!'}
             }
         }
     }
 })
-def editar_tarefa_status(user_task_id):
+def editar_tarefa_status(task_id, user_id):
     try:
-        # Pegando os dados da requisição
         data = request.get_json()
         status = data.get('status')
-
         if not status:
             return jsonify({"erro": "Status é obrigatório!"}), 400
 
-        # Pegando o token JWT do cabeçalho Authorization
-        token = request.headers.get('Authorization')
-        if token:
-            token = token.split(" ")[1]  # Pega o token depois do "Bearer"
-        else:
-            return jsonify({"erro": "Token JWT não fornecido!"}), 400
+        tarefa_atualizada = TaskService.atualizar_status_tarefa(task_id, user_id, status)
 
-        # Obtendo o user_id a partir do token JWT
-        user_id = obter_user_id_do_token(token)
-        if not user_id:
-            return jsonify({"erro": "Token inválido ou expirado!"}), 400
+        if not tarefa_atualizada:
+            return jsonify({"erro": "Tarefa não encontrada ou não pertence ao usuário!"}), 404
 
-        # Buscar a tarefa no banco de dados
-        conn = conectar_bd()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tasks WHERE user_task_id = ? AND user_id = ?", (user_task_id, user_id))
-        tarefa = cursor.fetchone()
-
-        if not tarefa:
-            return jsonify({"erro": "Tarefa não encontrada!"}), 404
-
-        # Atualizar o status da tarefa
-        cursor.execute("UPDATE tasks SET status = ? WHERE user_task_id = ?", (status, user_task_id))
-        conn.commit()
-        conn.close()
-
-        # Retornar a tarefa atualizada
-        return jsonify({
-            'user_task_id': user_task_id,
-            'title': tarefa[1],
-            'description': tarefa[2],
-            'status': status,
-            'user_id': tarefa[3],
-            'board_id': tarefa[4]
-        }), 200
+        return jsonify(tarefa_atualizada), 200
 
     except Exception as e:
-        print(f"Erro: {str(e)}")  # Imprime o erro no terminal
-        return jsonify({"erro": "Erro interno do servidor!"}), 500
+        print(f"Erro inesperado ao editar tarefa status: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao editar tarefa!"}), 500
 
-
-
-@tarefas_bp.route('/tasks/<int:user_task_id>', methods=['DELETE'])
+@tarefas_bp.route('/tasks/<int:task_id>', methods=['DELETE'])
+@token_required
 @swag_from({
     'tags': ['Tarefas'],
-    'description': 'Exclui uma tarefa existente',
+    'description': 'Exclui uma tarefa específica do usuário autenticado',
+    'security': [{'Bearer': []}],
     'parameters': [
         {
-            'name': 'Authorization',
-            'in': 'header',
-            'type': 'string',
-            'description': 'Token JWT para autenticação',
-            'required': True
-        },
-        {
-            'name': 'user_task_id',
+            'name': 'task_id',
             'in': 'path',
             'type': 'integer',
-            'description': 'ID da tarefa a ser excluída',
+            'description': 'ID principal da tarefa a ser excluída',
             'required': True
         }
     ],
@@ -303,54 +283,203 @@ def editar_tarefa_status(user_task_id):
         '200': {
             'description': 'Tarefa excluída com sucesso',
             'examples': {
-                'application/json': {'message': 'Tarefa excluída com sucesso!'}
+                'application/json': {'mensagem': 'Tarefa excluída com sucesso!'}
             }
         },
-        '400': {
-            'description': 'Token não fornecido ou inválido',
+        '401': {
+            'description': 'Token ausente ou inválido',
             'examples': {
-                'application/json': {'erro': 'Token JWT não fornecido ou inválido!'}
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
             }
         },
         '404': {
-            'description': 'Tarefa não encontrada',
+            'description': 'Tarefa não encontrada ou não pertence ao usuário',
             'examples': {
-                'application/json': {'erro': 'Tarefa não encontrada!'}
+                'application/json': {'erro': 'Tarefa não encontrada ou não pertence ao usuário!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao excluir tarefa!'}
             }
         }
     }
 })
-def excluir_tarefa(user_task_id):
+def excluir_tarefa(task_id, user_id):
     try:
-        # Pegando o token JWT do cabeçalho Authorization
-        token = request.headers.get('Authorization')
-        if token:
-            token = token.split(" ")[1]  # Pega o token depois do "Bearer"
-        else:
-            return jsonify({"erro": "Token JWT não fornecido!"}), 400
+        tarefa_excluida = TaskService.excluir_tarefa(task_id, user_id)
 
-        # Obtendo o user_id a partir do token JWT
-        user_id = obter_user_id_do_token(token)
-        if not user_id:
-            return jsonify({"erro": "Token inválido ou expirado!"}), 400
+        if not tarefa_excluida:
+            return jsonify({"erro": "Tarefa não encontrada ou não pertence ao usuário!"}), 404
 
-        # Buscar a tarefa no banco de dados
-        conn = conectar_bd()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM tasks WHERE user_task_id = ? AND user_id = ?", (user_task_id, user_id))
-        tarefa = cursor.fetchone()
-
-        if not tarefa:
-            return jsonify({"erro": "Tarefa não encontrada!"}), 404
-
-        # Excluir a tarefa do banco de dados
-        cursor.execute("DELETE FROM tasks WHERE user_task_id = ? AND user_id = ?", (user_task_id, user_id))
-        conn.commit()
-        conn.close()
-
-        # Retornar sucesso
-        return jsonify({"message": "Tarefa excluída com sucesso!"}), 200
+        return jsonify({"mensagem": "Tarefa excluída com sucesso!"}), 200
 
     except Exception as e:
-        print(f"Erro: {str(e)}")  # Imprime o erro no terminal
-        return jsonify({"erro": "Erro interno do servidor!"}), 500
+        print(f"Erro inesperado ao excluir tarefa: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao excluir tarefa!"}), 500
+
+# NOVO ENDPOINT: Vincular uma label a uma tarefa
+@tarefas_bp.route('/tasks/<int:task_id>/labels', methods=['POST'])
+@token_required
+@swag_from({
+    'tags': ['Tarefas'],
+    'description': 'Vincula uma label existente a uma tarefa específica do usuário autenticado',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'task_id',
+            'in': 'path',
+            'type': 'integer',
+            'description': 'ID da tarefa à qual a label será vinculada',
+            'required': True
+        },
+        {
+            'name': 'body',
+            'in': 'body',
+            'type': 'object',
+            'required': True,
+            'properties': {
+                'label_id': {'type': 'integer', 'description': 'ID da label a ser vinculada'}
+            },
+            'example': {
+                'label_id': 1
+            }
+        }
+    ],
+    'responses': {
+        '200': {
+            'description': 'Label vinculada à tarefa com sucesso',
+            'examples': {
+                'application/json': {
+                    'id': 1,
+                    'user_task_id': 1,
+                    'title': 'Tarefa com Label',
+                    'description': '...',
+                    'status': 'toDo',
+                    'user_id': 1,
+                    'board_id': 1,
+                    'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}]
+                }
+            }
+        },
+        '400': {
+            'description': 'ID da label ausente ou vínculo já existente',
+            'examples': {
+                'application/json': {'erro': 'ID da label é obrigatório!'},
+                'application/json': {'erro': 'Vínculo de label já existe!'}
+            }
+        },
+        '401': {
+            'description': 'Token ausente ou inválido',
+            'examples': {
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
+            }
+        },
+        '404': {
+            'description': 'Tarefa ou Label não encontrada ou não pertence ao usuário',
+            'examples': {
+                'application/json': {'erro': 'Tarefa não encontrada ou não pertence ao usuário!'},
+                'application/json': {'erro': 'Label não encontrada ou não pertence ao usuário!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao vincular label!'}
+            }
+        }
+    }
+})
+def vincular_label_tarefa(task_id, user_id):
+    try:
+        data = request.get_json()
+        label_id = data.get('label_id')
+
+        if not label_id:
+            return jsonify({"erro": "ID da label é obrigatório!"}), 400
+
+        result = TaskService.vincular_label_a_tarefa(task_id, label_id, user_id)
+        
+        if "erro" in result:
+            return jsonify(result), result.get("status_code", 500) # Usar status_code do serviço, se presente
+        
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"Erro inesperado ao vincular label à tarefa: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao vincular label!"}), 500
+
+# NOVO ENDPOINT: Desvincular uma label de uma tarefa
+@tarefas_bp.route('/tasks/<int:task_id>/labels/<int:label_id>', methods=['DELETE'])
+@token_required
+@swag_from({
+    'tags': ['Tarefas'],
+    'description': 'Desvincula uma label de uma tarefa específica do usuário autenticado',
+    'security': [{'Bearer': []}],
+    'parameters': [
+        {
+            'name': 'task_id',
+            'in': 'path',
+            'type': 'integer',
+            'description': 'ID da tarefa da qual a label será desvinculada',
+            'required': True
+        },
+        {
+            'name': 'label_id',
+            'in': 'path',
+            'type': 'integer',
+            'description': 'ID da label a ser desvinculada',
+            'required': True
+        }
+    ],
+    'responses': {
+        '200': {
+            'description': 'Label desvinculada da tarefa com sucesso',
+            'examples': {
+                'application/json': {
+                    'id': 1,
+                    'user_task_id': 1,
+                    'title': 'Tarefa sem Label',
+                    'description': '...',
+                    'status': 'toDo',
+                    'user_id': 1,
+                    'board_id': 1,
+                    'labels': []
+                }
+            }
+        },
+        '401': {
+            'description': 'Token ausente ou inválido',
+            'examples': {
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
+            }
+        },
+        '404': {
+            'description': 'Tarefa, Label ou vínculo não encontrado ou não pertence ao usuário',
+            'examples': {
+                'application/json': {'erro': 'Tarefa não encontrada ou não pertence ao usuário!'},
+                'application/json': {'erro': 'Label não encontrada ou não pertence ao usuário!'},
+                'application/json': {'erro': 'Vínculo de label não encontrado para esta tarefa!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor ao desvincular label!'}
+            }
+        }
+    }
+})
+def desvincular_label_tarefa(task_id, label_id, user_id):
+    try:
+        result = TaskService.desvincular_label_da_tarefa(task_id, label_id, user_id)
+
+        if "erro" in result:
+            return jsonify(result), result.get("status_code", 500)
+        
+        return jsonify(result), 200
+
+    except Exception as e:
+        print(f"Erro inesperado ao desvincular label da tarefa: {e}")
+        return jsonify({"erro": "Erro interno do servidor ao desvincular label!"}), 500

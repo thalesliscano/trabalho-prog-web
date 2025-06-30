@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set VIRTUAL_ENV=C:\Users\THALINHO BAITOLA\Documents\projeto-web-facul\backend-to-do-kanban\venv
+set VIRTUAL_ENV=C:\Users\THALINHO BAITOLA\Documents\trabalho-prog-web\backend-to-do-kanban\venv
 
 if not defined PROMPT set PROMPT=$P$G
 

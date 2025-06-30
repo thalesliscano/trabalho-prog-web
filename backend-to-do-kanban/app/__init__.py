@@ -1,28 +1,45 @@
 import sqlite3
 from flask import Flask
-from flask_cors import CORS  # Importando o CORS
+from flask_cors import CORS
 from flasgger import Swagger
 from .routes.usuarios import usuarios_bp
 from .routes.tarefas import tarefas_bp
+from .routes.labels import labels_bp # <-- NOVA IMPORTAÇÃO
+from .config import Config
 
-# Função para criar o aplicativo Flask
 def create_app():
     app = Flask(__name__)
 
-    # Configuração do CORS para toda a aplicação
-    CORS(app, origins=["http://localhost:8080"]) # Permitindo todas as origens (substitua conforme necessário)
+    app.config.from_object(Config)
 
-    # Configuração do Swagger
-    Swagger(app)  # Isso ativa o Swagger UI na URL /apidocs
+    CORS(app, origins=["http://localhost:8080"])
 
-    # Configurações do aplicativo
-    app.config['SECRET_KEY'] = 'sua_chave_secreta_aqui'
+    swagger_template = {
+        "swagger": "2.0",
+        "info": {
+            "title": "API To-Do Kanban",
+            "description": "Documentação da API do sistema To-Do Kanban",
+            "version": "1.0"
+        },
+        "securityDefinitions": {
+            "Bearer": {
+                "type": "apiKey",
+                "name": "Authorization",
+                "in": "header",
+                "description": "Digite: **Bearer &lt;seu_token&gt;**"
+            }
+        },
+        "security": [
+            {
+                "Bearer": []
+            }
+        ]
+    }
 
-    # Registrar rotas, blueprints, etc.
-    from .routes import usuarios
-    app.register_blueprint(usuarios.usuarios_bp)
+    Swagger(app, template=swagger_template)
 
-    # Registrar o blueprint de tarefas
-    app.register_blueprint(tarefas_bp)  # Registrando o blueprint de tarefas
+    app.register_blueprint(usuarios_bp)
+    app.register_blueprint(tarefas_bp)
+    app.register_blueprint(labels_bp) # <-- REGISTRE O NOVO BLUEPRINT
 
     return app

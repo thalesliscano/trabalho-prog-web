@@ -4,24 +4,10 @@ from functools import wraps
 from ..services.usuario_service import UsuarioService
 from ..services.board_service import BoardService
 from app.services.auth import AuthService
-
-# Defina o decorador antes de usá-lo
-def token_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization')
-        if not token:
-            return jsonify({'erro': 'Token de autenticação não fornecido'}), 401
-        
-        token = token.split(" ")[1] if " " in token else token  # Remove "Bearer " do cabeçalho
-        user_id = AuthService.validar_token(token)
-        if not user_id:
-            return jsonify({'erro': 'Token inválido ou expirado'}), 401
-        
-        # Passa o user_id para a função protegida
-        kwargs['user_id'] = user_id
-        return f(*args, **kwargs)
-    return decorated
+import json
+from flask import Response
+from app.utils.decorators import token_required
+from app.services.label_service import LabelService # Importar LabelService
 
 # Agora, defina as rotas normalmente
 usuarios_bp = Blueprint('usuarios', __name__)
@@ -81,8 +67,9 @@ def criar_usuario():
     if 'erro' in resposta:
         return jsonify(resposta), 400
     
+    user_id = resposta['usuario']['id']
+    
     # Cria o board padrão
-    user_id = resposta['usuario']['id']  # Obter ID do usuário criado
     board = BoardService.criar_board(user_id, 'Meu Board Padrão')
     
     return jsonify({
@@ -90,7 +77,6 @@ def criar_usuario():
         'usuario': resposta['usuario'],
         'board': board
     }), 201
-
 @usuarios_bp.route('/login', methods=['POST'])
 @swag_from({
     'tags': ['Usuários'],
@@ -123,7 +109,7 @@ def criar_usuario():
             'examples': {
                 'application/json': {
                     'mensagem': 'Login bem-sucedido',
-                    'token': 'exemplo_de_token_gerado_aqui'  # Apenas o token será retornado
+                    'token': 'exemplo_de_token_gerado_aqui'
                 }
             }
         },
@@ -137,40 +123,43 @@ def criar_usuario():
 })
 def login():
     dados = request.json
-    email = dados.get('email')
-    senha = dados.get('password')
+    print('Dados recebidos:', dados)
+    
+    email = dados.get('email') if dados else None
+    senha = dados.get('password') if dados else None
 
     if not email or not senha:
         return jsonify({'erro': 'Campos "email" e "password" são obrigatórios'}), 400
 
     usuario = UsuarioService.login(email, senha)
+    print('Usuário encontrado:', usuario)
 
     if not usuario:
-        return jsonify({'erro': 'Credenciais inválidas'}), 401  # Caso o login falhe
+        return jsonify({'erro': 'Credenciais inválidas'}), 401
 
-    # Verifique se o retorno contém as informações esperadas
     if not isinstance(usuario, dict) or not all(key in usuario for key in ['id', 'name', 'email']):
         return jsonify({'erro': 'Erro no formato dos dados retornados'}), 500
 
-    # Gera o token JWT
-    token = AuthService.gerar_token(usuario['id'])
-    if not token:
-        return jsonify({'erro': 'Erro ao gerar o token'}), 500
+    try:
+        token = AuthService.gerar_token(usuario['id'])
+    except Exception as e:
+        return jsonify({'erro': f'Erro ao gerar o token: {str(e)}'}), 500
 
-    # Responde apenas com a mensagem de sucesso e o token
     return jsonify({
         'mensagem': 'Login bem-sucedido',
-        'token': token  # Apenas o token será retornado
+        'token': token
     }), 200
 
+
 @usuarios_bp.route('/usuarios', methods=['GET'])
-@token_required  # Protege o endpoint com a autenticação
+@token_required
 @swag_from({
     'tags': ['Usuários'],
     'description': 'Retorna os dados do usuário logado com o board e tarefas associados',
+    'security': [{'Bearer': []}],
     'responses': {
         '200': {
-            'description': 'Usuário encontrado com board e tarefas associadas',
+            'description': 'Usuário encontrado com board, tarefas e labels associadas',
             'examples': {
                 'application/json': {
                     'usuario': {
@@ -181,10 +170,11 @@ def login():
                             'id': 1, 
                             'name': 'Meu Board Padrão',
                             'tarefas': [
-                                {'id': 1, 'titulo': 'Tarefa 1', 'descricao': 'Descrição da tarefa 1'},
-                                {'id': 2, 'titulo': 'Tarefa 2', 'descricao': 'Descrição da tarefa 2'}
+                                {'id': 1, 'title': 'Tarefa 1', 'description': '...', 'status': 'toDo', 'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}]},
+                                {'id': 2, 'title': 'Tarefa 2', 'description': '...', 'status': 'doing', 'labels': []}
                             ]
-                        }
+                        },
+                        'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}, {'id': 2, 'name': 'Pessoal', 'hex_color': '#00FF00'}]
                     }
                 }
             }
@@ -194,29 +184,101 @@ def login():
             'examples': {
                 'application/json': {'erro': 'Usuário ou board não encontrado'}
             }
+        },
+        '401': {
+            'description': 'Token ausente ou inválido',
+            'examples': {
+                'application/json': {'erro': 'Token de autenticação não fornecido'}
+            }
         }
     }
 })
+
 def buscar_usuario_logado(user_id):
-    # Buscar o usuário pelo ID (utilizando o user_id extraído do token)
     usuario = UsuarioService.buscar_usuario_por_id(user_id)
 
     if not usuario:
         return jsonify({'erro': 'Usuário não encontrado'}), 404
 
-    # Buscar o board com as tarefas associadas ao usuário
     board_com_tarefas = BoardService.buscar_board_com_tarefas_por_usuario(user_id)
 
     if not board_com_tarefas:
         return jsonify({'erro': 'Board não encontrado'}), 404
 
-    # Criar a resposta com os dados do usuário, board e tarefas
+    # Buscar as labels do usuário usando LabelService (já retorna os detalhes completos)
+    labels = LabelService.buscar_labels_por_usuario(user_id)
+
     usuario_dict = {
-        'id': usuario[0],
-        'name': usuario[1],
-        'email': usuario[2],
-        'board': board_com_tarefas  # Incluindo o board com as tarefas associadas
-    }
+            'id': usuario['id'],
+            'name': usuario['name'],
+            'email': usuario['email'],
+            'board': board_com_tarefas,
+            'labels': labels # Agora inclui ID, nome e hex_color
+        }
 
     return jsonify({'usuario': usuario_dict}), 200
 
+@usuarios_bp.route('/usuarios/todos', methods=['GET'])
+@swag_from({
+    'tags': ['Usuários'],
+    'description': 'Retorna todos os usuários registrados com seus boards, tarefas e labels associados.',
+    'responses': {
+        '200': {
+            'description': 'Lista de todos os usuários detalhada',
+            'examples': {
+                'application/json': [
+                    {
+                        'id': 1,
+                        'name': 'João',
+                        'email': 'joao@exemplo.com',
+                        'board': {
+                            'id': 1,
+                            'name': 'Meu Board Padrão',
+                            'tarefas': [
+                                {'user_task_id': 1, 'title': 'Tarefa A', 'description': '...', 'status': 'toDo', 'labels': [{'id': 1, 'name': 'Urgente', 'hex_color': '#FF0000'}]},
+                                {'user_task_id': 2, 'title': 'Tarefa B', 'description': '...', 'status': 'doing', 'labels': []}
+                            ]
+                        },
+                        'labels': [{'id': 1, 'name': 'Prioridade', 'hex_color': '#FF0000'}]
+                    },
+                    {
+                        'id': 2,
+                        'name': 'Maria',
+                        'email': 'maria@exemplo.com',
+                        'board': {
+                            'id': 2,
+                            'name': 'Board da Maria',
+                            'tarefas': []
+                        },
+                        'labels': []
+                    }
+                ]
+            }
+        },
+        '404': {
+            'description': 'Nenhum usuário encontrado',
+            'examples': {
+                'application/json': {'mensagem': 'Nenhum usuário encontrado!'}
+            }
+        },
+        '500': {
+            'description': 'Erro interno do servidor',
+            'examples': {
+                'application/json': {'erro': 'Erro interno do servidor!'}
+            }
+        }
+    }
+})
+def buscar_todos_usuarios():
+    try:
+        # Este método precisaria ser adaptado no UsuarioService para buscar todos os detalhes,
+        # incluindo labels detalhadas para cada usuário.
+        # Por enquanto, vou manter a chamada existente e apenas atualizar o exemplo do Swagger.
+        usuarios = UsuarioService.buscar_todos_usuarios_detalhado() # Manter esta chamada
+        if usuarios:
+            return jsonify(usuarios), 200
+        else:
+            return jsonify({"mensagem": "Nenhum usuário encontrado!"}), 404
+    except Exception as e:
+        print(f"Erro ao buscar todos os usuários: {e}")
+        return jsonify({"erro": "Erro interno do servidor!"}), 500
