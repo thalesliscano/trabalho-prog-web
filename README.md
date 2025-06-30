@@ -51,3 +51,33 @@ pip install Flask Flask-Cors PyJWT flasgger
 ```
 pip install -r requirements.txt
 ```
+
+# To-do-kanban-Frontend
+
+Aplicação frontend do sistema To-Do Kanban.
+
+## Requisitos
+
+Antes de iniciar, certifique-se de ter instalado em sua máquina:
+
+- [Node.js](https://nodejs.org/)  
+- [npm](https://www.npmjs.com/) (gerenciador de pacotes que já vem com o Node)  
+- [Yarn](https://yarnpkg.com/) (opcional, mas recomendado)
+
+## Configuração do Ambiente
+
+Siga os passos abaixo para rodar o projeto localmente:
+
+### 1. Clonar o Repositório
+
+```bash
+git clone <URL_DO_REPOSITORIO>
+cd to-do-kanban-frontend
+cd app-vue
+```
+
+## Rode o comando para baixar as dependências
+``` 
+yarn install
+```
+
